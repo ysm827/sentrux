@@ -3385,6 +3385,7 @@ dependencies = [
  "eframe",
  "egui",
  "sentrux-core",
+ "sentrux-pro",
 ]
 
 [[package]]
@@ -3411,6 +3412,13 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "tree-sitter",
+]
+
+[[package]]
+name = "sentrux-pro"
+version = "0.4.5"
+dependencies = [
+ "sentrux-core",
 ]
 
 [[package]]
