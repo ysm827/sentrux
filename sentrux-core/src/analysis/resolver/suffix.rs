@@ -393,18 +393,102 @@ fn extract_module_name_generic<'a>(content: &'a str, directive: &str) -> Option<
     None
 }
 
+/// Extract prefix->directory mappings from a JSON manifest file.
+/// Navigates to each json_path and reads the object's key-value pairs.
+/// Keys are namespace prefixes (with separator), values are directory paths.
+/// Used for PSR-4 (composer.json), TypeScript paths (tsconfig.json), etc.
+fn extract_json_prefix_map(
+    content: &str,
+    json_paths: &[String],
+    namespace_sep: &str,
+) -> Vec<(String, String)> {
+    let mut prefixes = Vec::new();
+    let parsed: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return prefixes,
+    };
+    for json_path in json_paths {
+        // Navigate to the path (e.g., "autoload.psr-4")
+        // Use a custom split that handles hyphenated keys:
+        // "autoload.psr-4" splits on the first '.' -> ["autoload", "psr-4"]
+        let mut current = &parsed;
+        let keys = split_json_path(json_path);
+        for key in &keys {
+            match current.get(key.as_str()) {
+                Some(v) => current = v,
+                None => { current = &serde_json::Value::Null; break; }
+            }
+        }
+        // Read the object as prefix->directory map
+        if let Some(obj) = current.as_object() {
+            for (ns_prefix, dir_value) in obj {
+                // Normalize the namespace prefix: convert separator to /
+                let mut normalized = ns_prefix.clone();
+                if !namespace_sep.is_empty() {
+                    normalized = normalized.replace(namespace_sep, "/");
+                }
+                // Remove trailing slash
+                let normalized = normalized.trim_end_matches('/').to_string();
+
+                // Directory can be a string or array of strings
+                let dirs: Vec<String> = match dir_value {
+                    serde_json::Value::String(s) => vec![s.trim_end_matches('/').to_string()],
+                    serde_json::Value::Array(arr) => arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.trim_end_matches('/').to_string())
+                        .collect(),
+                    _ => continue,
+                };
+                for dir in dirs {
+                    if !normalized.is_empty() {
+                        prefixes.push((normalized.clone(), dir));
+                    }
+                }
+            }
+        }
+    }
+    prefixes
+}
+
+/// Split a JSON path like "autoload.psr-4" into segments.
+/// Splits on '.' but only at the top level — each segment can contain hyphens.
+fn split_json_path(path: &str) -> Vec<String> {
+    path.split('.').map(|s| s.to_string()).collect()
+}
+
+/// Plugin resolver config snapshot for prefix collection.
+/// Holds references to the fields needed from each plugin's ResolverConfig.
+struct PrefixPluginConfig<'a> {
+    prefix_file: &'a str,
+    directive: &'a str,
+    format: &'a str,
+    json_paths: &'a [String],
+    namespace_sep: &'a str,
+}
+
 /// Scan project roots for module prefix files and build a map of module paths to project dirs.
-/// Reads module_prefix_file and module_prefix_directive from ALL loaded plugin profiles.
+/// Reads module_prefix_file from ALL loaded plugin profiles.
+/// Supports two formats:
+///   - "line" (default): reads `<directive> <path>` from a text file (e.g., Go go.mod).
+///   - "json_map": reads prefix->directory mappings from a JSON file (e.g., PHP composer.json).
 /// Sorted longest-first so more specific module paths match before shorter ones.
 fn collect_module_prefixes(project_map: &HashMap<String, String>, scan_root: &Path) -> Vec<(String, String)> {
-    // Collect all (file, directive) pairs from plugin profiles
-    let prefix_configs: Vec<(&str, &str)> = crate::analysis::lang_registry::all_profiles()
-        .filter(|p| !p.semantics.resolver.module_prefix_file.is_empty()
-                  && !p.semantics.resolver.module_prefix_directive.is_empty())
-        .map(|p| (
-            p.semantics.resolver.module_prefix_file.as_str(),
-            p.semantics.resolver.module_prefix_directive.as_str(),
-        ))
+    // Collect all plugin configs that have a module_prefix_file
+    let prefix_configs: Vec<PrefixPluginConfig<'_>> = crate::analysis::lang_registry::all_profiles()
+        .filter(|p| !p.semantics.resolver.module_prefix_file.is_empty())
+        .filter(|p| {
+            // Must have either a directive (line format) or json_paths (json_map format)
+            !p.semantics.resolver.module_prefix_directive.is_empty()
+                || (p.semantics.resolver.module_prefix_format == "json_map"
+                    && !p.semantics.resolver.module_prefix_json_paths.is_empty())
+        })
+        .map(|p| PrefixPluginConfig {
+            prefix_file: p.semantics.resolver.module_prefix_file.as_str(),
+            directive: p.semantics.resolver.module_prefix_directive.as_str(),
+            format: p.semantics.resolver.module_prefix_format.as_str(),
+            json_paths: &p.semantics.resolver.module_prefix_json_paths,
+            namespace_sep: p.semantics.resolver.namespace_separator.as_str(),
+        })
         .collect();
 
     if prefix_configs.is_empty() {
@@ -415,16 +499,36 @@ fn collect_module_prefixes(project_map: &HashMap<String, String>, scan_root: &Pa
     let mut prefixes = Vec::new();
 
     for &project_dir in &unique_roots {
-        for &(prefix_file, directive) in &prefix_configs {
+        for cfg in &prefix_configs {
             let path = if project_dir.is_empty() {
-                scan_root.join(prefix_file)
+                scan_root.join(cfg.prefix_file)
             } else {
-                scan_root.join(project_dir).join(prefix_file)
+                scan_root.join(project_dir).join(cfg.prefix_file)
             };
 
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Some(module_name) = extract_module_name_generic(&content, directive) {
-                    prefixes.push((module_name.to_string(), project_dir.to_string()));
+                if cfg.format == "json_map" && !cfg.json_paths.is_empty() {
+                    // JSON map format: read prefix->directory mappings
+                    let maps = extract_json_prefix_map(
+                        &content,
+                        cfg.json_paths,
+                        cfg.namespace_sep,
+                    );
+                    for (prefix, dir) in maps {
+                        // Build the full project-relative path for the directory.
+                        // The dir from JSON is relative to the manifest file location.
+                        let full_dir = if project_dir.is_empty() {
+                            dir
+                        } else {
+                            format!("{}/{}", project_dir, dir)
+                        };
+                        prefixes.push((prefix, full_dir));
+                    }
+                } else if !cfg.directive.is_empty() {
+                    // Line format (existing): read "directive value" from text file
+                    if let Some(module_name) = extract_module_name_generic(&content, cfg.directive) {
+                        prefixes.push((module_name.to_string(), project_dir.to_string()));
+                    }
                 }
             }
         }
@@ -901,4 +1005,96 @@ fn navigate_json<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a ser
     let mut current = value;
     for key in path.split('.') { current = current.get(key)?; }
     Some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_prefix_map_psr4_basic() {
+        // Typical composer.json PSR-4 autoload
+        let content = r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#;
+        let paths = vec!["autoload.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "\\");
+        assert_eq!(result, vec![("App".to_string(), "src".to_string())]);
+    }
+
+    #[test]
+    fn json_prefix_map_multiple_namespaces() {
+        let content = r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/",
+                    "Database\\Factories\\": "database/factories/",
+                    "Database\\Seeders\\": "database/seeders/"
+                }
+            }
+        }"#;
+        let paths = vec!["autoload.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "\\");
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&("App".to_string(), "src".to_string())));
+        assert!(result.contains(&("Database/Factories".to_string(), "database/factories".to_string())));
+        assert!(result.contains(&("Database/Seeders".to_string(), "database/seeders".to_string())));
+    }
+
+    #[test]
+    fn json_prefix_map_with_dev_autoload() {
+        let content = r#"{
+            "autoload": {"psr-4": {"App\\": "src/"}},
+            "autoload-dev": {"psr-4": {"Tests\\": "tests/"}}
+        }"#;
+        let paths = vec!["autoload.psr-4".to_string(), "autoload-dev.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "\\");
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&("App".to_string(), "src".to_string())));
+        assert!(result.contains(&("Tests".to_string(), "tests".to_string())));
+    }
+
+    #[test]
+    fn json_prefix_map_array_dirs() {
+        // PSR-4 allows array of directories for a single namespace
+        let content = r#"{"autoload":{"psr-4":{"App\\":["src/","lib/"]}}}"#;
+        let paths = vec!["autoload.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "\\");
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&("App".to_string(), "src".to_string())));
+        assert!(result.contains(&("App".to_string(), "lib".to_string())));
+    }
+
+    #[test]
+    fn json_prefix_map_invalid_json() {
+        let content = "not json at all";
+        let paths = vec!["autoload.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "\\");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn json_prefix_map_missing_path() {
+        let content = r#"{"autoload":{}}"#;
+        let paths = vec!["autoload.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "\\");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn json_prefix_map_empty_namespace_sep() {
+        // No separator conversion — namespace prefix kept as-is
+        let content = r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#;
+        let paths = vec!["autoload.psr-4".to_string()];
+        let result = extract_json_prefix_map(content, &paths, "");
+        // With empty sep, the backslash stays in the prefix
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "App\\");
+        assert_eq!(result[0].1, "src");
+    }
+
+    #[test]
+    fn split_json_path_basic() {
+        assert_eq!(split_json_path("autoload.psr-4"), vec!["autoload", "psr-4"]);
+        assert_eq!(split_json_path("compilerOptions.paths"), vec!["compilerOptions", "paths"]);
+        assert_eq!(split_json_path("name"), vec!["name"]);
+    }
 }

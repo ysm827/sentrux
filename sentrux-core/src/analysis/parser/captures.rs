@@ -49,7 +49,8 @@ fn process_scoped_path(
     if let Ok(path_text) = node.utf8_text(content) {
         if let Some(last_sep) = path_text.rfind("::") {
             let module_part = &path_text[..last_sep];
-            let normalized = normalize_module_path(module_part, false);
+            // Scoped paths (Rust ::) always use false for dots, empty namespace_sep
+            let normalized = normalize_module_path(module_part, false, "");
             if !normalized.is_empty() && import_set.insert(normalized.clone()) {
                 imports.push(normalized);
             }
@@ -388,8 +389,8 @@ fn apply_module_transform(module: &str, transform: &str) -> String {
 }
 
 /// Insert a normalized module path into imports if non-empty and not seen.
-fn insert_normalized(raw: &str, dots_are_seps: bool, imports: &mut Vec<String>, import_set: &mut HashSet<String>) {
-    let module = normalize_module_path(raw, dots_are_seps);
+fn insert_normalized(raw: &str, dots_are_seps: bool, namespace_sep: &str, imports: &mut Vec<String>, import_set: &mut HashSet<String>) {
+    let module = normalize_module_path(raw, dots_are_seps, namespace_sep);
     if !module.is_empty() && import_set.insert(module.clone()) {
         imports.push(module);
     }
@@ -411,6 +412,7 @@ fn resolve_import_from_node(
     profile: &crate::analysis::plugin::profile::LanguageProfile,
     transform: &str,
     dots_are_seps: bool,
+    namespace_sep: &str,
     imports: &mut Vec<String>,
     import_set: &mut HashSet<String>,
 ) {
@@ -421,7 +423,7 @@ fn resolve_import_from_node(
             if !expanded.is_empty() {
                 for raw in &expanded {
                     let module = apply_module_transform(raw, transform);
-                    insert_normalized(&module, dots_are_seps, imports, import_set);
+                    insert_normalized(&module, dots_are_seps, namespace_sep, imports, import_set);
                 }
                 return;
             }
@@ -432,7 +434,7 @@ fn resolve_import_from_node(
             node, content, &profile.semantics.import_ast,
         );
         for raw in paths {
-            insert_normalized(&raw, dots_are_seps, imports, import_set);
+            insert_normalized(&raw, dots_are_seps, namespace_sep, imports, import_set);
         }
     }
 }
@@ -446,14 +448,15 @@ pub(super) fn process_import(
 ) {
     let profile = crate::analysis::lang_registry::profile(lang);
     let dots_are_seps = lang_uses_dot_separator(lang);
+    let namespace_sep = profile.semantics.resolver.namespace_separator.as_str();
     let transform = &profile.semantics.import_ast.module_name_transform;
     if let Some(module) = &ictx.import_module_text {
         let module = apply_module_transform(module, transform);
-        insert_normalized(&module, dots_are_seps, imports, import_set);
+        insert_normalized(&module, dots_are_seps, namespace_sep, imports, import_set);
     } else if let Some(module) = &ictx.name_text {
         let module = apply_module_transform(module, transform);
-        insert_normalized(&module, dots_are_seps, imports, import_set);
+        insert_normalized(&module, dots_are_seps, namespace_sep, imports, import_set);
     } else if let Some(node) = ictx.import_node.or(ictx.match_node) {
-        resolve_import_from_node(node, content, profile, transform, dots_are_seps, imports, import_set);
+        resolve_import_from_node(node, content, profile, transform, dots_are_seps, namespace_sep, imports, import_set);
     }
 }

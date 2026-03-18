@@ -454,6 +454,16 @@ pub struct ResolverConfig {
     /// Empty = source at package root (no subdirectory).
     pub source_root: String,
 
+    /// Namespace separator to convert to `/` (e.g., "\\" for PHP, already handles "::" and ".").
+    pub namespace_separator: String,
+
+    /// Format for reading module prefix file: "line" (default) or "json_map".
+    pub module_prefix_format: String,
+
+    /// JSON paths to prefix maps (used when format = "json_map").
+    /// e.g., ["autoload.psr-4", "autoload-dev.psr-4"]
+    pub module_prefix_json_paths: Vec<String>,
+
     // Workspace resolution is handled by the suffix-index + alias system.
     // No workspace-specific fields needed — the resolver accepts ALL edges
     // within the scan root. Cross-project imports are real dependencies.
@@ -473,6 +483,9 @@ impl Default for ResolverConfig {
             path_alias_base_url: String::new(),
             resolve_extensions: Vec::new(),
             source_root: String::new(),
+            namespace_separator: String::new(),
+            module_prefix_format: String::new(),
+            module_prefix_json_paths: Vec::new(),
         }
     }
 }

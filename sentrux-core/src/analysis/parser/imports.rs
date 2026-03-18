@@ -31,9 +31,12 @@ pub(crate) fn lang_uses_dot_separator(lang: &str) -> bool {
 
 /// Normalize a module path to slash-separated form.
 /// `dots_are_separators`: true for languages where '.' means module separator
-/// (Python, Java, C#, Scala, Kotlin, Ruby, PHP). False for file-path languages
+/// (Python, Java, C#, Scala, Kotlin, Ruby). False for file-path languages
 /// (C/C++, Go, HTML, CSS) and Rust (uses :: which is always converted).
-pub(crate) fn normalize_module_path(raw: &str, dots_are_separators: bool) -> String {
+/// `namespace_sep`: configurable namespace separator from plugin.toml (e.g., "\\" for PHP).
+///   Converted to `/` after the built-in `::` and `.` conversions, so it won't
+///   conflict with those. Empty string means no extra conversion.
+pub(crate) fn normalize_module_path(raw: &str, dots_are_separators: bool, namespace_sep: &str) -> String {
     let s = raw.trim();
     if s.is_empty() {
         return String::new();
@@ -55,6 +58,12 @@ pub(crate) fn normalize_module_path(raw: &str, dots_are_separators: bool) -> Str
         // Only convert dots when no slashes present (avoids mangling file paths
         // that were already slash-separated by the :: conversion).
         normalized = normalized.replace('.', "/");
+    }
+
+    // Convert configurable namespace separator (e.g., "\\" for PHP).
+    // Only applied if it's not already handled by the built-in conversions above.
+    if !namespace_sep.is_empty() && namespace_sep != "::" && namespace_sep != "." {
+        normalized = normalized.replace(namespace_sep, "/");
     }
 
     format!("{}{}", prefix, normalized)
@@ -405,19 +414,39 @@ mod tests {
 
     #[test]
     fn normalize_dot_separator() {
-        assert_eq!(normalize_module_path("os.path", true), "os/path");
-        assert_eq!(normalize_module_path("os.path", false), "os.path");
+        assert_eq!(normalize_module_path("os.path", true, ""), "os/path");
+        assert_eq!(normalize_module_path("os.path", false, ""), "os.path");
     }
 
     #[test]
     fn normalize_rust_path() {
-        assert_eq!(normalize_module_path("std::collections::HashMap", false), "std/collections/HashMap");
+        assert_eq!(normalize_module_path("std::collections::HashMap", false, ""), "std/collections/HashMap");
     }
 
     #[test]
     fn normalize_relative() {
-        assert_eq!(normalize_module_path("..utils", true), "..utils");
-        assert_eq!(normalize_module_path("...deep.path", true), "...deep/path");
+        assert_eq!(normalize_module_path("..utils", true, ""), "..utils");
+        assert_eq!(normalize_module_path("...deep.path", true, ""), "...deep/path");
+    }
+
+    #[test]
+    fn normalize_php_backslash() {
+        // PHP uses backslash as namespace separator
+        assert_eq!(normalize_module_path("App\\Entity\\User", false, "\\"), "App/Entity/User");
+        assert_eq!(normalize_module_path("App\\Models\\Order", false, "\\"), "App/Models/Order");
+    }
+
+    #[test]
+    fn normalize_namespace_sep_no_conflict_with_builtins() {
+        // namespace_sep == "::" or "." should be no-ops (already handled by built-in logic)
+        assert_eq!(normalize_module_path("std::collections", false, "::"), "std/collections");
+        assert_eq!(normalize_module_path("os.path", true, "."), "os/path");
+    }
+
+    #[test]
+    fn normalize_empty_namespace_sep() {
+        // Empty namespace_sep means no extra conversion
+        assert_eq!(normalize_module_path("App\\Entity\\User", false, ""), "App\\Entity\\User");
     }
 }
 
