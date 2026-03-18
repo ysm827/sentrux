@@ -12,6 +12,8 @@ use tree_sitter::{Language, Query};
 pub struct PluginLangConfig {
     /// Language name (owned)
     pub name: String,
+    /// Plugin version from plugin.toml
+    pub version: String,
     /// Compiled tree-sitter grammar (loaded from .so/.dylib)
     pub grammar: Language,
     /// Compiled tree-sitter query for structural extraction
@@ -136,6 +138,7 @@ impl LangRegistry {
                     let extensions = plugin.extensions.clone();
                     self.configs.push(PluginLangConfig {
                         name: plugin.name,
+                        version: plugin.version,
                         grammar: plugin.grammar,
                         query,
                         extensions: plugin.extensions,
@@ -254,6 +257,11 @@ pub fn all_extensions() -> Vec<&'static str> {
 /// Number of loaded language plugins.
 pub fn plugin_count() -> usize {
     REGISTRY.count()
+}
+
+/// Get plugin version for a language name.
+pub fn plugin_version(lang: &str) -> Option<&'static str> {
+    REGISTRY.get(lang).map(|c| c.version.as_str())
 }
 
 /// All manifest files across all loaded plugins.
