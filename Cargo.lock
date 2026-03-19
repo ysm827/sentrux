@@ -3477,6 +3477,7 @@ name = "sentrux"
 version = "0.5.7"
 dependencies = [
  "clap",
+ "dirs",
  "eframe",
  "egui",
  "sentrux-core",

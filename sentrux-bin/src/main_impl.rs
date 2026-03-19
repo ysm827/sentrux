@@ -105,8 +105,29 @@ enum Command {
         action: Option<AnalyticsAction>,
     },
 
-    /// Upgrade to Sentrux Pro
+    /// Open browser to purchase / sign in for Sentrux Pro
     Login,
+
+    /// Manage Pro license and plugin
+    Pro {
+        #[command(subcommand)]
+        action: ProAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProAction {
+    /// Activate Pro with a license key
+    Activate {
+        /// License key JSON string or path to key file
+        key: String,
+    },
+    /// Show Pro license status
+    Status,
+    /// Deactivate Pro (remove license + plugin)
+    Deactivate,
+    /// Update Pro plugin to latest version
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -200,6 +221,10 @@ pub fn run() -> eframe::Result<()> {
             run_login();
             Ok(())
         }
+        Some(Command::Pro { action }) => {
+            run_pro(action);
+            Ok(())
+        }
         Some(Command::Scan { path }) => {
             run_gui(path)
         }
@@ -223,30 +248,145 @@ fn analytics_opt_out_path() -> Option<std::path::PathBuf> {
 }
 
 fn run_login() {
-    // Check if this binary has Pro code compiled in
-    #[cfg(feature = "pro")]
-    {
-        // Pro binary: do actual login flow
-        // TODO: open browser → OAuth → save license key
-        println!("Opening browser for Sentrux Pro login...");
-        println!("(Not yet implemented — coming soon)");
+    println!();
+    println!("  Sentrux Pro — purchase at https://sentrux.dev/pro");
+    println!();
+    println!("  After purchase, activate with:");
+    println!("    sentrux pro activate <license-key>");
+    println!();
+    println!("  Or paste your license key file:");
+    println!("    sentrux pro activate /path/to/license.key");
+    println!();
+    // Try to open the browser
+    let _ = open_url("https://sentrux.dev/pro");
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn(); }
+}
+
+fn run_pro(action: ProAction) {
+    match action {
+        ProAction::Activate { key } => pro_activate(&key),
+        ProAction::Status => pro_status(),
+        ProAction::Deactivate => pro_deactivate(),
+        ProAction::Update => pro_update(),
+    }
+}
+
+fn pro_activate(key_input: &str) {
+    // key_input is either a JSON string or a path to a file
+    let key_json = if key_input.starts_with('{') {
+        key_input.to_string()
+    } else if std::path::Path::new(key_input).exists() {
+        match std::fs::read_to_string(key_input) {
+            Ok(content) => content,
+            Err(e) => {
+                eprintln!("Failed to read key file: {}", e);
+                return;
+            }
+        }
+    } else {
+        eprintln!("Invalid key: not a JSON string or file path");
         return;
+    };
+
+    // Validate the key
+    match sentrux_core::license::validate_license(&key_json) {
+        Some(license) => {
+            // Save to disk
+            let dir = match dirs::home_dir() {
+                Some(h) => h.join(".sentrux"),
+                None => { eprintln!("Cannot find home directory"); return; }
+            };
+            let _ = std::fs::create_dir_all(&dir);
+            let key_path = dir.join("license.key");
+            match std::fs::write(&key_path, &key_json) {
+                Ok(_) => {
+                    println!("License activated!");
+                    println!("  User:    {}", license.user);
+                    println!("  Tier:    {}", license.tier);
+                    println!("  Expires: {}", license.expires);
+                    println!("  Saved:   {}", key_path.display());
+                    println!();
+                    println!("Restart sentrux to enable Pro features.");
+                }
+                Err(e) => eprintln!("Failed to save license: {}", e),
+            }
+        }
+        None => {
+            eprintln!("Invalid or expired license key.");
+        }
+    }
+}
+
+fn pro_status() {
+    let tier = sentrux_core::license::current_tier();
+    println!("Tier: {}", tier);
+
+    // Try to read and show license details
+    if let Some(home) = dirs::home_dir() {
+        let key_path = home.join(".sentrux").join("license.key");
+        if let Ok(content) = std::fs::read_to_string(&key_path) {
+            if let Some(license) = sentrux_core::license::validate_license(&content) {
+                println!("User:    {}", license.user);
+                println!("Expires: {}", license.expires);
+                println!("ID:      {}", license.id);
+            } else {
+                println!("License: invalid or expired");
+            }
+        } else {
+            println!("License: not found");
+        }
+
+        let dylib_name = if cfg!(target_os = "macos") { "pro.dylib" }
+            else if cfg!(target_os = "windows") { "pro.dll" }
+            else { "pro.so" };
+        let dylib_path = home.join(".sentrux").join("pro").join(dylib_name);
+        if dylib_path.exists() {
+            println!("Plugin:  {} (installed)", dylib_path.display());
+        } else {
+            println!("Plugin:  not installed");
+        }
     }
 
-    #[cfg(not(feature = "pro"))]
-    {
-        // Free source build: tell user to get pre-built binary
-        println!();
-        println!("  Sentrux Pro requires the official binary.");
-        println!();
-        println!("  Install the official binary:");
-        println!("    macOS:   brew install sentrux/tap/sentrux");
-        println!("    Linux:   curl -fsSL https://raw.githubusercontent.com/sentrux/sentrux/main/install.sh | sh");
-        println!("    Windows: curl -L -o sentrux.exe https://github.com/sentrux/sentrux/releases/latest/download/sentrux-windows-x86_64.exe");
-        println!();
-        println!("  Then run `sentrux login` to activate Pro.");
-        println!();
+    if let Some((name, version)) = sentrux_core::pro_registry::plugin_info() {
+        println!("Loaded:  {} v{}", name, version);
     }
+
+    if sentrux_core::pro_registry::is_loaded() {
+        println!("Status:  Pro features active");
+    } else {
+        println!("Status:  Free");
+    }
+}
+
+fn pro_deactivate() {
+    if let Some(home) = dirs::home_dir() {
+        let key_path = home.join(".sentrux").join("license.key");
+        let pro_dir = home.join(".sentrux").join("pro");
+
+        if key_path.exists() {
+            let _ = std::fs::remove_file(&key_path);
+            println!("License removed.");
+        }
+        if pro_dir.exists() {
+            let _ = std::fs::remove_dir_all(&pro_dir);
+            println!("Pro plugin removed.");
+        }
+        println!("Deactivated. Restart sentrux to return to free mode.");
+    }
+}
+
+fn pro_update() {
+    println!("Pro plugin update: not yet implemented.");
+    println!("For now, download the latest pro.dylib from https://sentrux.dev/pro");
+    println!("and place it in ~/.sentrux/pro/");
 }
 
 fn run_analytics(action: Option<AnalyticsAction>) {
