@@ -135,7 +135,7 @@ fn handle_health(_args: &Value, tier: &Tier, state: &mut McpState) -> Result<Val
     });
 
     // Pro: root-cause-organized diagnostics. Tells AI WHERE to focus for each root cause.
-    if tier.is_pro() {
+    if crate::pro_registry::has(crate::pro_registry::ProFeature::McpDiagnostics) {
         result["diagnostics"] = json!({
             "modularity": {
                 "god_files": h.god_files.iter().map(|f| json!({"path": f.path, "fan_out": f.value})).collect::<Vec<_>>(),
@@ -306,7 +306,7 @@ fn handle_check_rules(_args: &Value, tier: &Tier, state: &mut McpState) -> Resul
     let total_rules = config.constraints.count_active()
         + config.layers.len()
         + config.boundaries.len();
-    let truncated = if !tier.is_pro() && total_rules > 3 {
+    let truncated = if !crate::pro_registry::has(crate::pro_registry::ProFeature::UnlimitedRules) && total_rules > 3 {
         // Keep constraints (1 rule) + first 2 of layers/boundaries
         let mut remaining = 3usize.saturating_sub(if config.constraints.count_active() > 0 { 1 } else { 0 });
         config.layers.truncate(remaining.min(config.layers.len()));

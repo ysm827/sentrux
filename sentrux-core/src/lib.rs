@@ -25,4 +25,5 @@ pub mod core;
 pub mod layout;
 pub mod license;
 pub mod metrics;
+pub mod pro_registry;
 pub mod renderer;

@@ -97,7 +97,7 @@ fn handle_evolution(args: &Value, tier: &Tier, state: &mut McpState) -> Result<V
     });
 
     // Pro: file-level hotspot details. Free: scores + counts only.
-    if tier.is_pro() {
+    if crate::pro_registry::has(crate::pro_registry::ProFeature::EvolutionDetails) {
         result["top_hotspots"] = json!(report.hotspots.iter().take(10).map(|h| json!({
             "file": h.file,
             "risk_score": h.risk_score,
@@ -155,7 +155,7 @@ fn handle_dsm(args: &Value, tier: &Tier, state: &mut McpState) -> Result<Value, 
     });
 
     // Pro: full matrix text and cluster file lists. Free: summary stats only.
-    if tier.is_pro() {
+    if crate::pro_registry::has(crate::pro_registry::ProFeature::EvolutionDetails) {
         let format = args.get("format").and_then(|f| f.as_str()).unwrap_or("stats");
         if format == "text" {
             result["matrix"] = json!(crate::metrics::dsm::render_text(&dsm, 30));
@@ -210,7 +210,7 @@ fn handle_test_gaps(args: &Value, tier: &Tier, state: &mut McpState) -> Result<V
     });
 
     // Pro: file-level gap details. Free: scores + counts only.
-    if tier.is_pro() {
+    if crate::pro_registry::has(crate::pro_registry::ProFeature::EvolutionDetails) {
         let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(20) as usize;
         result["riskiest_untested"] = json!(report.gaps.iter().take(limit).map(|g| json!({
             "file": g.file, "risk_score": g.risk_score,

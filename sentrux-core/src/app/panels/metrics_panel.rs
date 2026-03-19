@@ -55,9 +55,9 @@ fn draw_metrics_sections(ui: &mut egui::Ui, state: &mut AppState, tc: &ThemeConf
         draw_sep(ui, tc, 4.0);
     }
 
-    // Evolution: free shows grades only, pro shows full details
+    // Evolution: free shows summary only, pro shows full details
     if let Some(evo) = &state.evolution_report {
-        if tier.is_pro() {
+        if crate::pro_registry::has(crate::pro_registry::ProFeature::EvolutionDetails) {
             draw_evolution_section(ui, evo, tc);
         } else {
             draw_evolution_summary(ui, evo, tc);
@@ -71,9 +71,9 @@ fn draw_metrics_sections(ui: &mut egui::Ui, state: &mut AppState, tc: &ThemeConf
         draw_sep(ui, tc, 4.0);
     }
 
-    // What-if: only shown for pro users, hidden entirely for free
+    // What-if: only shown when Pro plugin is loaded
     if let (Some(sel), Some(snap)) = (&state.selected_path, &state.snapshot) {
-        if tier.is_pro() {
+        if crate::pro_registry::has(crate::pro_registry::ProFeature::WhatIfAnalysis) {
             let sel_clone = sel.clone();
             let snap_clone = snap.clone();
             draw_whatif_section(ui, &sel_clone, &snap_clone, &mut state.whatif_cache, tc);

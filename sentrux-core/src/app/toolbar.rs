@@ -170,8 +170,11 @@ fn draw_scale_mode_combo(ui: &mut egui::Ui, state: &mut AppState, layout_changed
 fn draw_visual_group(ui: &mut egui::Ui, state: &mut AppState, visual_changed: &mut bool) {
     ui.label(egui::RichText::new("color:").small().weak());
     let color_label = state.color_mode.label();
-    let tier = license::current_tier();
-    let available_modes: &[ColorMode] = if tier.is_pro() { ColorMode::ALL } else { ColorMode::FREE };
+    let available_modes: &[ColorMode] = if crate::pro_registry::has(crate::pro_registry::ProFeature::ExtraColorModes) {
+        ColorMode::ALL
+    } else {
+        ColorMode::FREE
+    };
     egui::ComboBox::from_id_salt("color_mode")
         .selected_text(color_label)
         .width(80.0)
@@ -337,12 +340,12 @@ fn draw_toggle_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Export button — Free: score only, Pro: full detail
     if state.health_report.is_some() {
-        let is_pro = crate::license::current_tier().is_pro();
-        let tip = if is_pro { "Export full report" } else { "Export quality summary" };
+        let has_pro = crate::pro_registry::is_loaded();
+        let tip = if has_pro { "Export full report" } else { "Export quality summary" };
         if ui.button("\u{2913}").on_hover_text(tip).clicked() {
             if let Some(report) = &state.health_report {
                 let rc = &report.root_cause_scores;
-                let summary = if is_pro {
+                let summary = if has_pro {
                     // Pro: include root cause scores and raw data
                     serde_json::json!({
                         "quality_signal": report.quality_signal,

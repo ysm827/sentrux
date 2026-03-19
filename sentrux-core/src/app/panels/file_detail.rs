@@ -54,8 +54,7 @@ pub(crate) fn draw_file_detail(
 
     ui.add_space(6.0);
 
-    let is_pro = crate::license::current_tier().is_pro();
-    if !is_pro {
+    if !crate::pro_registry::has(crate::pro_registry::ProFeature::FileDetailPanel) {
         return;
     }
 
